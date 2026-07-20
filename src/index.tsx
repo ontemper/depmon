@@ -6,9 +6,11 @@ import { App } from "./app.tsx";
 // Handle CLI subcommands before starting TUI
 const cmd = process.argv[2];
 if (cmd === "update") {
-  console.log("Updating depmon...");
-  const rm = Bun.spawnSync(["bash", "-c", "rm -rf ~/.bun/install/cache/@GH@werkamsus-depmon*"], { stdout: "inherit", stderr: "inherit" });
-  const install = Bun.spawnSync(["bun", "install", "-g", "github:werkamsus/depmon"], { stdout: "inherit", stderr: "inherit" });
+  console.log("Updating depmon from github.com/ontemper/depmon...");
+  const install = Bun.spawnSync(
+    ["bun", "add", "--global", "github:ontemper/depmon"],
+    { stdout: "inherit", stderr: "inherit" },
+  );
   process.exit(install.exitCode);
 }
 

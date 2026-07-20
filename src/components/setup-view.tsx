@@ -29,6 +29,10 @@ export function SetupView({ onDone }: { onDone: () => void }) {
       onDone();
       return;
     }
+    if (key.shift && key.name === "tab") {
+      setFocusIdx((i) => Math.max(0, i - 1));
+      return;
+    }
     if (key.name === "tab" || (key.name === "enter" || key.name === "return")) {
       if (focusIdx < FIELDS.length - 1) {
         setFocusIdx((i) => i + 1);
@@ -43,10 +47,6 @@ export function SetupView({ onDone }: { onDone: () => void }) {
         setSaved(true);
         setTimeout(() => onDone(), 600);
       }
-      return;
-    }
-    if (key.shift && key.name === "tab") {
-      setFocusIdx((i) => Math.max(0, i - 1));
       return;
     }
   });

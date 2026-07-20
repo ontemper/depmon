@@ -1,9 +1,11 @@
 import { C } from "../lib/colors.ts";
 import { loadConfig } from "../lib/config.ts";
+import { useTerminalDimensions } from "@opentui/react";
 
-const cfg = loadConfig();
 
 export function StatusBar({ hint }: { hint?: string }) {
+  const cfg = loadConfig();
+  const { width } = useTerminalDimensions();
   return (
     <box
       flexDirection="row"
@@ -16,20 +18,23 @@ export function StatusBar({ hint }: { hint?: string }) {
       <text fg={C.fgDark}>
         {hint ?? (
           <>
-            <span fg={C.fgMuted}>j/k</span> nav{"  "}
-            <span fg={C.fgMuted}>tab</span> view{"  "}
-            <span fg={C.fgMuted}>enter</span> expand{"  "}
-            <span fg={C.fgMuted}>/</span> filter{"  "}
-            <span fg={C.fgMuted}>s</span> sort{"  "}
-            <span fg={C.fgMuted}>p</span> pulumi{"  "}
-            <span fg={C.fgMuted}>g</span> github{"  "}
-            <span fg={C.fgMuted}>r</span> refresh{"  "}
-            <span fg={C.fgMuted}>c</span> config{"  "}
-            <span fg={C.fgMuted}>q</span> quit
+            <span fg={C.cyan}>j/k</span> move{"  "}
+            <span fg={C.cyan}>enter</span> inspect{"  "}
+            <span fg={C.cyan}>/</span> find{"  "}
+            <span fg={C.cyan}>s</span> order{"  "}
+            <span fg={C.cyan}>r</span> sync
+            {width >= 100 && (
+              <>
+                {"  "}<span fg={C.cyan}>p</span> pulumi{"  "}
+                <span fg={C.cyan}>g</span> github{"  "}
+                <span fg={C.cyan}>c</span> config{"  "}
+                <span fg={C.cyan}>q</span> quit
+              </>
+            )}
           </>
         )}
       </text>
-      <text fg={C.fgDark}>{cfg.ghRepo || "depmon"}</text>
+      <text fg={C.fgDark}>{width >= 112 ? cfg.ghRepo || "repository not configured" : ""}</text>
     </box>
   );
 }

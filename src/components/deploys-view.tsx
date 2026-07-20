@@ -1,79 +1,132 @@
 import { useTerminalDimensions } from "@opentui/react";
 import { C } from "../lib/colors.ts";
-import { pad } from "../lib/helpers.ts";
-import type { DeployData } from "../lib/types.ts";
-import { Divider } from "./divider.tsx";
+import { extractStackName, timeAgo, truncate } from "../lib/helpers.ts";
+import { runHealth } from "../lib/deploy-state.ts";
+import type { GHRun } from "../lib/types.ts";
 import { DeployRow } from "./deploy-row.tsx";
 
+const HEALTH_COLOR = {
+  failed: C.red,
+  deploying: C.cyan,
+  healthy: C.green,
+  unknown: C.yellow,
+} as const;
+
+function RunDetail({ run, compact, width }: { run: GHRun; compact: boolean; width: number }) {
+  const health = runHealth(run);
+  const color = HEALTH_COLOR[health];
+  const titleStack = extractStackName(run.displayTitle);
+  const stack = titleStack === "unknown" ? extractStackName(run.name) : titleStack;
+  const label = health === "deploying" ? run.status : run.conclusion || run.status;
+
+  if (compact) {
+    return (
+      <box flexDirection="column" paddingX={2}>
+        <text fg={C.border}>{"─".repeat(Math.max(10, width - 4))}</text>
+        <text>
+          <span fg={color}><strong>{label.toUpperCase()}</strong></span>
+          <span fg={C.fgDark}>  //  </span>
+          <span fg={C.cyan}><strong>{stack}</strong></span>
+          <span fg={C.fgDark}> · {timeAgo(run.startedAt)}</span>
+        </text>
+        <text fg={C.magenta}>{truncate(run.headBranch, Math.max(20, width - 4))}</text>
+        <text fg={C.fgMuted}>{truncate(run.displayTitle, Math.max(20, width - 4))}</text>
+      </box>
+    );
+  }
+
+  return (
+    <box flexDirection="column" width={width} paddingX={2}>
+      <text fg={C.fgDark}>SELECTED RUN</text>
+      <text fg={color}><strong>{label.toUpperCase()}</strong></text>
+      <text fg={C.cyan}><strong>{stack}</strong></text>
+      <text fg={C.border}>{"─".repeat(Math.max(10, width - 4))}</text>
+      <text fg={C.fgDark}>BRANCH</text>
+      <text fg={C.magenta}>{truncate(run.headBranch, width - 4)}</text>
+      <box height={1} />
+      <text fg={C.fgDark}>CHANGE</text>
+      <text fg={C.fg}>{truncate(run.displayTitle, width - 4)}</text>
+      <box height={1} />
+      <text fg={C.fgDark}>TRIGGER</text>
+      <text fg={C.fg}>{run.event === "workflow_dispatch" ? "Manual dispatch" : run.event}</text>
+      <text fg={C.fgDark}>Started {timeAgo(run.startedAt)}</text>
+      <box flexGrow={1} />
+      <text fg={C.fgDark}>enter / g open in GitHub</text>
+    </box>
+  );
+}
+
 export function DeploysView({
-  data,
+  runs,
   selectedIdx,
 }: {
-  data: DeployData;
+  runs: GHRun[];
   selectedIdx: number;
 }) {
   const { width, height } = useTerminalDimensions();
-  const runs = data.ghRuns;
-  const inProgress = runs.filter(
-    (r) => r.status === "in_progress" || r.status === "queued" || r.status === "waiting"
-  );
-  const completed = runs.filter((r) => r.status === "completed");
-  const branchW = Math.max(22, Math.floor((width - 60) * 0.35));
-  const titleW = Math.max(25, Math.floor((width - 60) * 0.45));
+  const wide = width >= 112;
+  const inspectorWidth = Math.min(48, Math.max(38, Math.floor(width * 0.32)));
+  const listWidth = wide ? width - inspectorWidth - 1 : width;
+  const listHeight = Math.max(4, height - (wide ? 9 : 13));
+  const maxStart = Math.max(0, runs.length - listHeight);
+  const start = Math.min(maxStart, Math.max(0, selectedIdx - Math.floor(listHeight / 2)));
+  const visible = runs.slice(start, start + listHeight);
+  const selected = runs[selectedIdx];
+  const active = runs.filter((run) => runHealth(run) === "deploying").length;
+  const failed = runs.filter((run) => runHealth(run) === "failed").length;
 
-  return (
-    <box flexDirection="column" width="100%" flexGrow={1}>
-      {/* Stats */}
-      <box flexDirection="row" gap={3} paddingX={2} height={1}>
+  if (runs.length === 0) {
+    return (
+      <box justifyContent="center" alignItems="center" flexGrow={1}>
+        <box flexDirection="column" alignItems="center">
+          <text fg={C.fg}><strong>NO WORKFLOW RUNS</strong></text>
+          <text fg={C.fgDark}>No Pulumi workflows were returned by GitHub Actions.</text>
+        </box>
+      </box>
+    );
+  }
+
+  const list = (
+    <box flexDirection="column" width={listWidth}>
+      <box flexDirection="row" justifyContent="space-between" paddingX={2}>
         <text fg={C.fg}>
-          <span fg={C.fgDark}>total:</span> <strong>{String(runs.length)}</strong>
+          <strong>WORKFLOW RUNS</strong>
+          <span fg={C.fgDark}> · {String(active)} live · {String(failed)} failed</span>
         </text>
-        {inProgress.length > 0 && (
-          <text fg={C.blue}>
-            <span fg={C.fgDark}>deploying:</span> <strong>{String(inProgress.length)}</strong>
-          </text>
-        )}
-        <text fg={C.green}>
-          <span fg={C.fgDark}>completed:</span> <strong>{String(completed.length)}</strong>
+        <text fg={C.fgDark}>{String(runs.length)} recent</text>
+      </box>
+      <box paddingX={1}>
+        <text fg={C.fgDark}>
+          {listWidth < 72 ? "    STATUS     STACK          CHANGE" : "    STATUS     STACK          BRANCH"}
         </text>
       </box>
-
-      {/* In-progress */}
-      {inProgress.length > 0 && (
-        <>
-          <box paddingX={2}>
-            <text fg={C.blue}><strong>▸ In Progress</strong></text>
-          </box>
-          {inProgress.map((run, i) => (
-            <DeployRow key={run.url} run={run} selected={selectedIdx === i} width={width} />
-          ))}
-          <Divider />
-        </>
-      )}
-
-      {/* Column headers */}
-      <box flexDirection="row" paddingX={2}>
-        <text fg={C.fgDark}>{pad("", 3)}</text>
-        <text fg={C.fgDark}><strong>{pad("STACK", 14)}</strong></text>
-        <text fg={C.fgDark}><strong>{pad("BRANCH", branchW + 1)}</strong></text>
-        <text fg={C.fgDark}><strong>{pad("COMMIT", titleW + 1)}</strong></text>
-        <text fg={C.fgDark}><strong>{pad("TRIGGER", 10)}</strong></text>
-        <text fg={C.fgDark}><strong>WHEN</strong></text>
-      </box>
-
-      <Divider />
-
-      {/* Completed */}
-      <scrollbox height={Math.max(5, height - 12)}>
-        {completed.map((run, i) => (
+      <box flexDirection="column">
+        {visible.map((run, offset) => (
           <DeployRow
             key={run.url}
             run={run}
-            selected={selectedIdx === i + inProgress.length}
-            width={width}
+            selected={start + offset === selectedIdx}
+            width={listWidth}
           />
         ))}
-      </scrollbox>
+      </box>
+    </box>
+  );
+
+  if (wide && selected) {
+    return (
+      <box flexDirection="row" width="100%" flexGrow={1}>
+        {list}
+        <box width={1} backgroundColor={C.border} />
+        <RunDetail run={selected} compact={false} width={inspectorWidth} />
+      </box>
+    );
+  }
+
+  return (
+    <box flexDirection="column" width="100%" flexGrow={1}>
+      {list}
+      {selected && <RunDetail run={selected} compact width={width} />}
     </box>
   );
 }

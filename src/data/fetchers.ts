@@ -1,7 +1,17 @@
-import type { StackInfo, StackHistory, GHRun } from "../lib/types.ts";
+import type { StackInfo, StackHistory, GHRun, PullRequestInfo } from "../lib/types.ts";
 import { loadConfig } from "../lib/config.ts";
 
-const cfg = loadConfig();
+const COMMAND_TIMEOUT_MS = 30_000;
+
+export class DataSourceError extends Error {
+  constructor(
+    readonly source: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DataSourceError";
+  }
+}
 
 async function runCmd(cmd: string[], cwd?: string): Promise<string> {
   const proc = Bun.spawn(cmd, {
@@ -9,9 +19,39 @@ async function runCmd(cmd: string[], cwd?: string): Promise<string> {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const text = await new Response(proc.stdout).text();
-  await proc.exited;
-  return text;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+  }, COMMAND_TIMEOUT_MS);
+
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  clearTimeout(timeout);
+
+  const source = cmd[0] ?? "command";
+  if (timedOut) {
+    throw new DataSourceError(source, `${source} timed out after 30 seconds`);
+  }
+  if (exitCode !== 0) {
+    const detail = stderr.trim() || stdout.trim() || `exit code ${exitCode}`;
+    throw new DataSourceError(source, detail.split("\n").at(-1) ?? detail);
+  }
+  return stdout;
+}
+
+function parseArray<T>(source: string, text: string): T[] {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (!Array.isArray(value)) throw new Error("expected an array");
+    return value as T[];
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "invalid JSON";
+    throw new DataSourceError(source, `${source} returned ${detail}`);
+  }
 }
 
 function parseHistoryEntry(e: any): StackHistory {
@@ -55,22 +95,21 @@ function parseHistoryEntry(e: any): StackHistory {
 }
 
 export async function fetchStackList(): Promise<StackInfo[]> {
+  const cfg = loadConfig();
   const text = await runCmd(
     ["pulumi", "--cwd", cfg.pulumiPkg, "stack", "ls", "--json"],
-    cfg.pulumiDir
+    cfg.pulumiDir,
   );
-  try {
-    const stacks = JSON.parse(text);
-    return stacks.map((s: any) => ({
-      name: s.name,
-      lastUpdate: s.lastUpdate || "n/a",
-      resourceCount: String(s.resourceCount ?? "n/a"),
-      url: s.url || "",
-      updateInProgress: s.updateInProgress ?? false,
+  const stacks = parseArray<Record<string, unknown>>("Pulumi stack list", text);
+  return stacks
+    .filter((stack) => typeof stack.name === "string")
+    .map((stack) => ({
+      name: String(stack.name),
+      lastUpdate: typeof stack.lastUpdate === "string" ? stack.lastUpdate : "n/a",
+      resourceCount: String(stack.resourceCount ?? "n/a"),
+      url: typeof stack.url === "string" ? stack.url : "",
+      updateInProgress: stack.updateInProgress === true,
     }));
-  } catch {
-    return [];
-  }
 }
 
 export async function fetchStackHistory(
@@ -78,7 +117,8 @@ export async function fetchStackHistory(
   pageSize = 1,
   includeRefresh = false,
 ): Promise<StackHistory[]> {
-  // Fetch extra entries so we can filter out refreshes and still return enough
+  const cfg = loadConfig();
+  // Fetch extra entries so we can filter out refreshes and still return enough.
   const fetchSize = includeRefresh ? pageSize : pageSize + 10;
   const text = await runCmd(
     [
@@ -87,45 +127,54 @@ export async function fetchStackHistory(
       "--json", "--show-secrets=false",
       "--page-size", String(fetchSize),
     ],
-    cfg.pulumiDir
+    cfg.pulumiDir,
   );
-  try {
-    const entries = JSON.parse(text);
-    if (!entries || entries.length === 0) return [];
-    const parsed: StackHistory[] = entries.map(parseHistoryEntry);
-    if (includeRefresh) return parsed.slice(0, pageSize);
-    // Filter to only real deploys (update/import/destroy), skip refresh/preview
-    return parsed
-      .filter((e) => e.kind === "update" || e.kind === "import" || e.kind === "destroy")
-      .slice(0, pageSize);
-  } catch {
-    return [];
-  }
+  const entries = parseArray<Record<string, unknown>>(`Pulumi history for ${stackName}`, text);
+  const parsed: StackHistory[] = entries.map(parseHistoryEntry);
+  if (includeRefresh) return parsed.slice(0, pageSize);
+  return parsed
+    .filter((entry) => entry.kind === "update" || entry.kind === "import" || entry.kind === "destroy")
+    .slice(0, pageSize);
 }
 
 export async function fetchGHRuns(): Promise<GHRun[]> {
+  const cfg = loadConfig();
+  if (!cfg.ghRepo) {
+    throw new DataSourceError("GitHub Actions", "No GitHub repository is configured");
+  }
   const text = await runCmd([
     "gh", "run", "list",
     "--json", "name,status,conclusion,startedAt,updatedAt,headBranch,displayTitle,url,workflowName,event",
-    "--limit", "30",
+    "--limit", "40",
     "-R", cfg.ghRepo,
   ]);
-  try {
-    const runs: GHRun[] = JSON.parse(text);
-    return runs.filter((r) => r.workflowName?.toLowerCase().includes("pulumi"));
-  } catch {
-    return [];
+  return parseArray<GHRun>("GitHub Actions", text)
+    .filter((run) => run.workflowName?.toLowerCase().includes("pulumi"));
+}
+
+export async function fetchPullRequests(): Promise<PullRequestInfo[]> {
+  const cfg = loadConfig();
+  if (!cfg.ghRepo) {
+    throw new DataSourceError("GitHub pull requests", "No GitHub repository is configured");
   }
+  const text = await runCmd([
+    "gh", "pr", "list",
+    "--state", "all",
+    "--json", "number,title,state,isDraft,headRefName,url,updatedAt,closedAt,mergedAt,author",
+    "--limit", "200",
+    "-R", cfg.ghRepo,
+  ]);
+  return parseArray<PullRequestInfo>("GitHub pull requests", text);
 }
 
 export async function fetchGHRunLogs(runUrl: string): Promise<string> {
-  // Extract run ID from URL
   const match = runUrl.match(/\/runs\/(\d+)/);
-  if (!match) return "Could not parse run URL";
-  const runId = match[1]!;
+  if (!match) throw new DataSourceError("GitHub Actions", "Could not identify the workflow run");
+  const cfg = loadConfig();
   const text = await runCmd([
-    "gh", "run", "view", runId,
+    "gh", "run", "view", match[1]!,
+    "--log-failed",
     "-R", cfg.ghRepo,
   ]);
-  return text;
+  return text.trim() || "No failed step logs were returned.";
 }

@@ -1,49 +1,47 @@
 import { C } from "../lib/colors.ts";
-import { statusIcon, statusColor, shortBranch, truncate, pad, isCoreName, timeAgo } from "../lib/helpers.ts";
-import type { StackInfo, StackHistory, GHRun } from "../lib/types.ts";
+import { shortBranch, truncate, pad, timeAgo } from "../lib/helpers.ts";
+import type { StackState } from "../lib/deploy-state.ts";
+
+const HEALTH_STYLE = {
+  failed: { icon: "×", color: C.red },
+  deploying: { icon: "◆", color: C.cyan },
+  healthy: { icon: "●", color: C.green },
+  unknown: { icon: "?", color: C.yellow },
+} as const;
 
 export function StackRow({
-  stack,
-  history,
-  ghRun,
+  state,
   selected,
   width,
 }: {
-  stack: StackInfo;
-  history?: StackHistory;
-  ghRun?: GHRun;
+  state: StackState;
   selected: boolean;
   width: number;
 }) {
-  const bg = selected ? C.bgSelected : "transparent";
-  const nameW = 14;
-  const branchW = Math.max(20, Math.floor((width - 85) * 0.4));
-  const msgW = Math.max(16, Math.floor((width - 85) * 0.45));
-
-  // Pulumi status
-  const pStatus = history?.status || "unknown";
-  const pIcon = statusIcon(pStatus);
-  const pColor = statusColor(pStatus);
-
-  // GH Actions status
-  const gIcon = ghRun ? statusIcon(ghRun.status, ghRun.conclusion) : "·";
-  const gColor = ghRun ? statusColor(ghRun.status, ghRun.conclusion) : C.fgDark;
-
+  const { stack, history, health, statusLabel } = state;
+  const style = HEALTH_STYLE[health];
+  const narrow = width < 72;
+  const branchWidth = width >= 100 ? 22 : 16;
+  const messageWidth = Math.max(8, width - (narrow ? 44 : branchWidth + 58));
   const branch = history ? shortBranch(history.branch) : "—";
-  const msg = history ? truncate(history.message, msgW) : "never deployed";
-  const author = history?.author?.split(" ")[0] || "—";
-  const ago = stack.lastUpdate !== "n/a" ? timeAgo(stack.lastUpdate) : "never";
-  const nameColor = isCoreName(stack.name) ? C.orange : C.cyan;
+  const message = history?.message || "No deployment history";
+  const updated = stack.lastUpdate !== "n/a" ? timeAgo(stack.lastUpdate) : "never";
 
   return (
-    <box flexDirection="row" width="100%" backgroundColor={bg} paddingX={2} height={1}>
-      <text fg={pColor}>{pIcon}</text>
-      <text fg={gColor}>{pad(gIcon, 3)}</text>
-      <text fg={nameColor}><strong>{pad(stack.name, nameW)}</strong></text>
-      <text fg={C.magenta}>{pad(truncate(branch, branchW), branchW + 1)}</text>
-      <text fg={C.fg}>{pad(truncate(msg, msgW), msgW + 1)}</text>
-      <text fg={C.fgDark}>{pad(author, 9)}</text>
-      <text fg={C.fgDark}>{pad(ago, 9)}</text>
+    <box
+      flexDirection="row"
+      width="100%"
+      backgroundColor={selected ? C.bgSelected : "transparent"}
+      paddingX={1}
+      height={1}
+    >
+      <text fg={selected ? C.cyan : C.fgDark}>{selected ? "▌" : " "}</text>
+      <text fg={style.color}>{pad(style.icon, 2)}</text>
+      <text fg={style.color}>{pad(statusLabel.toUpperCase(), 11)}</text>
+      <text fg={C.fg}><strong>{pad(truncate(stack.name, 14), 15)}</strong></text>
+      {!narrow && <text fg={C.magenta}>{pad(truncate(branch, branchWidth - 1), branchWidth)}</text>}
+      <text fg={C.fgMuted}>{pad(truncate(message, messageWidth - 1), messageWidth)}</text>
+      <text fg={C.fgDark}>{pad(updated, 9)}</text>
       <text fg={C.fgDark}>{stack.resourceCount}</text>
     </box>
   );

@@ -1,64 +1,70 @@
-import { useMemo } from "react";
 import { useTerminalDimensions } from "@opentui/react";
 import { C } from "../lib/colors.ts";
-import { statusIcon, statusColor, shortBranch, truncate, timeAgo, isCoreName } from "../lib/helpers.ts";
-import type { DeployData } from "../lib/types.ts";
+import { pad, shortBranch, truncate, timeAgo } from "../lib/helpers.ts";
+import type { StackState } from "../lib/deploy-state.ts";
 
-export function ActivityView({ data }: { data: DeployData }) {
-  const { height } = useTerminalDimensions();
+const HEALTH_STYLE = {
+  failed: { icon: "×", color: C.red },
+  deploying: { icon: "◆", color: C.cyan },
+  healthy: { icon: "●", color: C.green },
+  unknown: { icon: "?", color: C.yellow },
+} as const;
 
-  const activities = useMemo(() => {
-    const items: {
-      stack: string;
-      message: string;
-      author: string;
-      time: string;
-      status: string;
-      branch: string;
-    }[] = [];
+export function ActivityView({
+  states,
+  selectedIdx,
+}: {
+  states: StackState[];
+  selectedIdx: number;
+}) {
+  const { width, height } = useTerminalDimensions();
+  const visibleCount = Math.max(2, Math.floor((height - 8) / 2));
+  const maxStart = Math.max(0, states.length - visibleCount);
+  const start = Math.min(maxStart, Math.max(0, selectedIdx - Math.floor(visibleCount / 2)));
+  const visible = states.slice(start, start + visibleCount);
 
-    for (const [name, h] of data.history) {
-      items.push({
-        stack: name,
-        message: h.message,
-        author: h.author,
-        time: h.startTime,
-        status: h.status,
-        branch: shortBranch(h.branch),
-      });
-    }
-
-    items.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-    return items;
-  }, [data.history]);
+  if (states.length === 0) {
+    return (
+      <box justifyContent="center" alignItems="center" flexGrow={1}>
+        <box flexDirection="column" alignItems="center">
+          <text fg={C.fg}><strong>NO DEPLOYMENT EVENTS</strong></text>
+          <text fg={C.fgDark}>The timeline appears after the first Pulumi deployment.</text>
+        </box>
+      </box>
+    );
+  }
 
   return (
     <box flexDirection="column" width="100%" flexGrow={1}>
-      <box paddingX={2} height={1}>
-        <text fg={C.fgDark}>Recent activity across all stacks (latest deploy per stack)</text>
+      <box flexDirection="row" justifyContent="space-between" paddingX={2}>
+        <text fg={C.fg}>
+          <strong>FLIGHT RECORDER</strong>
+          <span fg={C.fgDark}>{width < 76 ? " · enter opens history" : " · latest deployment per stack"}</span>
+        </text>
+        {width >= 76 && <text fg={C.fgDark}>enter opens full history</text>}
       </box>
-      <scrollbox height={Math.max(5, height - 8)}>
-        {activities.map((a) => {
-          const isCore = isCoreName(a.stack);
+      <box flexDirection="column" flexGrow={1}>
+        {visible.map((state, offset) => {
+          const history = state.history!;
+          const selected = start + offset === selectedIdx;
+          const style = HEALTH_STYLE[state.health];
+          const changeWidth = Math.max(8, width - 49);
+          const messageWidth = Math.max(12, width - 50);
+          const primary = `${selected ? "▌" : " "}  ${pad(timeAgo(history.startTime), 9)} ${style.icon} ${pad(truncate(state.stack.name, 15), 16)}${pad(`v${history.version}`, 7)}${pad(history.duration || "—", 8)}${truncate(history.resourceChanges || "no delta", changeWidth)}`;
+          const secondary = `${selected ? "▌" : "│"}           ${pad(truncate(shortBranch(history.branch), 19), 20)} ← ${pad(history.author.split(" ")[0] || "—", 10)} · ${truncate(history.message, messageWidth)}`;
           return (
-            <box key={a.stack} flexDirection="column" paddingX={2}>
-              <box flexDirection="row" gap={1}>
-                <text fg={statusColor(a.status)}>{statusIcon(a.status)}</text>
-                <text fg={isCore ? C.orange : C.cyan}><strong>{a.stack}</strong></text>
-                <text fg={C.fgDark}>·</text>
-                <text fg={C.magenta}>{a.branch}</text>
-                <text fg={C.fgDark}>·</text>
-                <text fg={C.fgDark}>{a.author}</text>
-                <text fg={C.fgDark}>·</text>
-                <text fg={C.fgDark}>{timeAgo(a.time)}</text>
-              </box>
-              <box paddingLeft={3}>
-                <text fg={C.fg}>{truncate(a.message, 90)}</text>
-              </box>
+            <box
+              key={state.stack.name}
+              flexDirection="column"
+              paddingX={1}
+              backgroundColor={selected ? C.bgSelected : "transparent"}
+            >
+              <text fg={selected ? C.fg : style.color}>{truncate(primary, Math.max(20, width - 2))}</text>
+              <text fg={selected ? C.fgMuted : C.fgDark}>{truncate(secondary, Math.max(20, width - 2))}</text>
             </box>
           );
         })}
-      </scrollbox>
+      </box>
     </box>
   );
 }

@@ -9,11 +9,13 @@
   },
   "scripts": {
     "dev": "bun run --watch src/index.tsx",
-    "start": "bun run src/index.tsx"
+    "start": "bun run src/index.tsx",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/werkamsus/depmon"
+    "url": "https://github.com/ontemper/depmon"
   },
   "keywords": ["pulumi", "deploy", "monitor", "tui", "terminal", "opentui"],
   "license": "MIT",

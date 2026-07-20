@@ -1,112 +1,94 @@
-import { useMemo } from "react";
 import { useTerminalDimensions } from "@opentui/react";
 import { C } from "../lib/colors.ts";
-import { pad, extractStackName } from "../lib/helpers.ts";
-import type { DeployData, SortMode, StackInfo, GHRun } from "../lib/types.ts";
-import { Divider } from "./divider.tsx";
+import type { StackState } from "../lib/deploy-state.ts";
+import type { SortMode } from "../lib/types.ts";
 import { StackRow } from "./stack-row.tsx";
 import { StackDetail } from "./stack-detail.tsx";
 
 export function StacksView({
-  data,
-  sorted,
+  states,
   selectedIdx,
   sortMode,
   filterText,
 }: {
-  data: DeployData;
-  sorted: StackInfo[];
+  states: StackState[];
   selectedIdx: number;
   sortMode: SortMode;
   filterText: string;
 }) {
   const { width, height } = useTerminalDimensions();
+  const wide = width >= 112;
+  const inspectorWidth = Math.min(48, Math.max(38, Math.floor(width * 0.32)));
+  const listWidth = wide ? width - inspectorWidth - 1 : width;
+  const listHeight = Math.max(4, height - (wide ? 9 : 14));
+  const maxStart = Math.max(0, states.length - listHeight);
+  const start = Math.min(maxStart, Math.max(0, selectedIdx - Math.floor(listHeight / 2)));
+  const visible = states.slice(start, start + listHeight);
+  const selected = states[selectedIdx];
+  const queueLabel = sortMode === "attention"
+    ? "ATTENTION QUEUE"
+    : sortMode === "recent"
+      ? "RECENT ACTIVITY"
+      : "STACK DIRECTORY";
 
-  // Build a map: stack name -> most recent GH run for that stack
-  const ghRunByStack = useMemo(() => {
-    const map = new Map<string, GHRun>();
-    for (const run of data.ghRuns) {
-      const name = extractStackName(run.name);
-      if (!map.has(name)) map.set(name, run);
-    }
-    return map;
-  }, [data.ghRuns]);
-
-  if (sorted.length === 0 && !data.loading) {
+  if (states.length === 0) {
     return (
       <box justifyContent="center" alignItems="center" flexGrow={1}>
-        <text fg={C.fgDark}>
-          {filterText ? `No stacks matching "${filterText}"` : "No stacks found. Check pulumi configuration."}
-        </text>
+        <box flexDirection="column" alignItems="center">
+          <text fg={C.fg}><strong>{filterText ? "NO MATCHING STACKS" : "NO STACKS FOUND"}</strong></text>
+          <text fg={C.fgDark}>
+            {filterText ? `Clear or change the filter “${filterText}”.` : "Check the Pulumi project in configuration."}
+          </text>
+        </box>
       </box>
     );
   }
 
-  const succeeded = [...data.history.values()].filter((h) => h.status === "succeeded").length;
-  const failed = [...data.history.values()].filter((h) => h.status === "failed").length;
-  const total = data.stacks.length;
-  const showing = sorted.length;
-  const sortLabel = sortMode === "recent" ? "recent" : "name";
+  const list = (
+    <box flexDirection="column" width={listWidth}>
+      <box flexDirection="row" justifyContent="space-between" paddingX={2}>
+        <text fg={C.fg}>
+          <strong>{queueLabel}</strong>
+          <span fg={C.fgDark}> · {String(states.length)} visible</span>
+        </text>
+        <text fg={C.fgDark}>
+          {start > 0 ? `↑ ${String(start)} earlier  ` : ""}
+          {start + visible.length < states.length ? `↓ ${String(states.length - start - visible.length)} more` : ""}
+        </text>
+      </box>
+      <box flexDirection="row" paddingX={1}>
+        <text fg={C.fgDark}>
+          {listWidth < 72 ? "    STATUS     STACK          CHANGE" : "    STATUS     STACK          BRANCH"}
+        </text>
+        {listWidth >= 82 && <text fg={C.fgDark}>{"                   CHANGE"}</text>}
+      </box>
+      <box flexDirection="column" flexGrow={1}>
+        {visible.map((state, offset) => (
+          <StackRow
+            key={state.stack.name}
+            state={state}
+            selected={start + offset === selectedIdx}
+            width={listWidth}
+          />
+        ))}
+      </box>
+    </box>
+  );
 
-  const branchW = Math.max(20, Math.floor((width - 85) * 0.4));
-  const msgW = Math.max(16, Math.floor((width - 85) * 0.45));
+  if (wide && selected) {
+    return (
+      <box flexDirection="row" width="100%" flexGrow={1}>
+        {list}
+        <box width={1} backgroundColor={C.border} />
+        <StackDetail state={selected} width={inspectorWidth} />
+      </box>
+    );
+  }
 
   return (
     <box flexDirection="column" width="100%" flexGrow={1}>
-      {/* Stats bar */}
-      <box flexDirection="row" gap={3} paddingX={2} height={1}>
-        <text fg={C.fg}>
-          <span fg={C.fgDark}>stacks:</span> <strong>{String(showing)}</strong>
-          {showing !== total && <span fg={C.fgDark}>/{String(total)}</span>}
-        </text>
-        <text fg={C.green}>
-          <span fg={C.fgDark}>healthy:</span> <strong>{String(succeeded)}</strong>
-        </text>
-        {failed > 0 && (
-          <text fg={C.red}>
-            <span fg={C.fgDark}>failed:</span> <strong>{String(failed)}</strong>
-          </text>
-        )}
-        <text fg={C.fgDark}>
-          sort: <span fg={C.blue}>{sortLabel}</span>
-        </text>
-      </box>
-
-      {/* Column headers */}
-      <box flexDirection="row" paddingX={2} width="100%">
-        <text fg={C.fgDark}><strong>{pad("P·G", 5)}</strong></text>
-        <text fg={C.fgDark}><strong>{pad("STACK", 14)}</strong></text>
-        <text fg={C.fgDark}><strong>{pad("BRANCH", branchW + 1)}</strong></text>
-        <text fg={C.fgDark}><strong>{pad("MESSAGE", msgW + 1)}</strong></text>
-        <text fg={C.fgDark}><strong>{pad("AUTHOR", 9)}</strong></text>
-        <text fg={C.fgDark}><strong>{pad("UPDATED", 9)}</strong></text>
-        <text fg={C.fgDark}><strong>RES</strong></text>
-      </box>
-
-      <Divider />
-
-      {/* Stack rows */}
-      <scrollbox height={Math.max(5, height - 16)}>
-        {sorted.map((stack, i) => (
-          <StackRow
-            key={stack.name}
-            stack={stack}
-            history={data.history.get(stack.name)}
-            ghRun={ghRunByStack.get(stack.name)}
-            selected={i === selectedIdx}
-            width={width}
-          />
-        ))}
-      </scrollbox>
-
-      {/* Detail panel for selected stack */}
-      {sorted[selectedIdx] && (
-        <StackDetail
-          stack={sorted[selectedIdx]}
-          history={data.history.get(sorted[selectedIdx].name)}
-          ghRun={ghRunByStack.get(sorted[selectedIdx].name)}
-        />
-      )}
+      {list}
+      {selected && <StackDetail state={selected} compact width={width} />}
     </box>
   );
 }

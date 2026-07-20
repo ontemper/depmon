@@ -1,81 +1,149 @@
-import { useState, useEffect, useCallback } from "react";
-import type { DeployData, StackHistory } from "../lib/types.ts";
-import { fetchStackList, fetchStackHistory, fetchGHRuns } from "./fetchers.ts";
+import { useState, useEffect, useCallback, useRef } from "react";
+import type { DeployData, StackHistory, StackInfo } from "../lib/types.ts";
+import { fetchStackList, fetchStackHistory, fetchGHRuns, fetchPullRequests } from "./fetchers.ts";
 import { readCache, writeCache } from "./cache.ts";
 
+const HISTORY_CONCURRENCY = 4;
+
+
+async function fetchLatestHistories(
+  stacks: StackInfo[],
+  previous: Map<string, StackHistory>,
+): Promise<{ history: Map<string, StackHistory>; failures: number }> {
+  const targets = stacks.filter((stack) => stack.lastUpdate !== "n/a");
+  const history = new Map<string, StackHistory>();
+  let cursor = 0;
+  let failures = 0;
+
+  const worker = async () => {
+    while (cursor < targets.length) {
+      const stack = targets[cursor++]!;
+      try {
+        const entries = await fetchStackHistory(stack.name, 1);
+        const latest = entries[0];
+        if (latest) history.set(stack.name, latest);
+      } catch {
+        failures += 1;
+        const stale = previous.get(stack.name);
+        if (stale) history.set(stack.name, stale);
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(HISTORY_CONCURRENCY, targets.length) },
+      () => worker(),
+    ),
+  );
+  return { history, failures };
+}
+
 export function useDeployData() {
-  const [data, setData] = useState<DeployData>(() => {
-    // Try loading from cache on first render for instant display
-    const cached = readCache();
-    if (cached) {
-      return {
+  const cached = useRef(readCache()).current;
+  const mounted = useRef(true);
+  const inFlight = useRef<Promise<void> | null>(null);
+  const [data, setData] = useState<DeployData>(() => cached
+    ? {
         stacks: cached.stacks,
         history: cached.history,
         ghRuns: cached.ghRuns,
-        loading: true, // Still loading fresh data
+        pullRequests: cached.pullRequests,
+        loading: true,
         lastRefresh: new Date(Date.now() - cached.age),
         error: null,
+        warnings: [],
         fromCache: true,
-      };
-    }
-    return {
-      stacks: [],
-      history: new Map(),
-      ghRuns: [],
-      loading: true,
-      lastRefresh: null,
-      error: null,
-      fromCache: false,
-    };
-  });
-
-  const refresh = useCallback(async () => {
-    setData((prev) => ({ ...prev, loading: true, error: null }));
-    try {
-      const [stacks, ghRuns] = await Promise.all([
-        fetchStackList(),
-        fetchGHRuns(),
-      ]);
-
-      const historyEntries = await Promise.all(
-        stacks
-          .filter((s) => s.lastUpdate !== "n/a")
-          .map(async (s) => {
-            const entries = await fetchStackHistory(s.name, 1);
-            return [s.name, entries[0] ?? null] as const;
-          })
-      );
-
-      const history = new Map<string, StackHistory>();
-      for (const [name, h] of historyEntries) {
-        if (h) history.set(name, h);
       }
-
-      // Write to disk cache
-      writeCache(stacks, history, ghRuns);
-
-      setData({
-        stacks,
-        history,
-        ghRuns,
-        loading: false,
-        lastRefresh: new Date(),
+    : {
+        stacks: [],
+        history: new Map(),
+        ghRuns: [],
+        pullRequests: [],
+        loading: true,
+        lastRefresh: null,
         error: null,
+        warnings: [],
         fromCache: false,
       });
-    } catch (e) {
-      setData((prev) => ({
-        ...prev,
-        loading: false,
-        error: e instanceof Error ? e.message : "Unknown error",
-      }));
-    }
+  const dataRef = useRef(data);
+  dataRef.current = data;
+
+  const refresh = useCallback((): Promise<void> => {
+    if (inFlight.current) return inFlight.current;
+
+    const task = (async () => {
+      setData((previous) => ({ ...previous, loading: true, error: null, warnings: [] }));
+      try {
+        const [stacksResult, runsResult, pullRequestsResult] = await Promise.allSettled([
+          fetchStackList(),
+          fetchGHRuns(),
+          fetchPullRequests(),
+        ]);
+        if (stacksResult.status === "rejected") throw stacksResult.reason;
+
+        const stacks = stacksResult.value;
+        const previousHistory = dataRef.current.history;
+        const previousRuns = dataRef.current.ghRuns;
+        const previousPullRequests = dataRef.current.pullRequests;
+
+        const { history, failures } = await fetchLatestHistories(stacks, previousHistory);
+        const warnings: string[] = [];
+        const ghRuns = runsResult.status === "fulfilled" ? runsResult.value : previousRuns;
+        const pullRequests = pullRequestsResult.status === "fulfilled"
+          ? pullRequestsResult.value
+          : previousPullRequests;
+        if (runsResult.status === "rejected") {
+          const detail = runsResult.reason instanceof Error ? runsResult.reason.message : "Unknown data source error";
+          warnings.push(`GitHub: ${detail}`);
+        }
+        if (pullRequestsResult.status === "rejected") {
+          const detail = pullRequestsResult.reason instanceof Error
+            ? pullRequestsResult.reason.message
+            : "Unknown data source error";
+          warnings.push(`GitHub PRs: ${detail}`);
+        }
+        if (failures > 0) {
+          warnings.push(`${failures} stack ${failures === 1 ? "history" : "histories"} could not be refreshed`);
+        }
+
+        writeCache(stacks, history, ghRuns, pullRequests);
+        if (!mounted.current) return;
+        setData({
+          stacks,
+          history,
+          ghRuns,
+          pullRequests,
+          loading: false,
+          lastRefresh: new Date(),
+          error: null,
+          warnings,
+          fromCache: false,
+        });
+      } catch (error) {
+        if (!mounted.current) return;
+        setData((previous) => ({
+          ...previous,
+          loading: false,
+          error: error instanceof Error ? error.message : "Unknown data source error",
+        }));
+      }
+    })().finally(() => {
+      inFlight.current = null;
+    });
+
+    inFlight.current = task;
+    return task;
   }, []);
 
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 60_000);
-    return () => clearInterval(interval);
+    mounted.current = true;
+    void refresh();
+    const interval = setInterval(() => void refresh(), 60_000);
+    return () => {
+      mounted.current = false;
+      clearInterval(interval);
+    };
   }, [refresh]);
 
   return { data, refresh };

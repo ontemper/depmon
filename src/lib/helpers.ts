@@ -87,6 +87,6 @@ export function sortStacks(
 }
 
 export function extractStackName(runName: string): string {
-  const match = runName.match(/Pulumi\s+\w+\s*-\s*(.+)/i);
-  return match?.[1]?.trim() || "unknown";
+  const separated = runName.match(/^Pulumi\s+[^·:–—-]+\s*[·:–—-]\s*([^·:]+?)(?:\s*[·:]\s*|$)/i);
+  return separated?.[1]?.trim() || "unknown";
 }

@@ -13,6 +13,7 @@ export function FilterBar({
       <input
         value={value}
         onChange={onChange}
+        onInput={onChange}
         focused
         width={40}
         backgroundColor={C.bgHighlight}

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { StackInfo, StackHistory, GHRun } from "../lib/types.ts";
+import type { StackInfo, StackHistory, GHRun, PullRequestInfo } from "../lib/types.ts";
 
 const CACHE_DIR = join(homedir(), ".cache", "depmon");
 const CACHE_FILE = join(CACHE_DIR, "state.json");
@@ -12,6 +12,7 @@ interface CachedState {
   stacks: StackInfo[];
   history: Record<string, StackHistory>;
   ghRuns: GHRun[];
+  pullRequests?: PullRequestInfo[];
 }
 
 function ensureCacheDir() {
@@ -24,6 +25,7 @@ export function readCache(): {
   stacks: StackInfo[];
   history: Map<string, StackHistory>;
   ghRuns: GHRun[];
+  pullRequests: PullRequestInfo[];
   age: number;
 } | null {
   try {
@@ -35,6 +37,7 @@ export function readCache(): {
       stacks: cached.stacks,
       history: new Map(Object.entries(cached.history)),
       ghRuns: cached.ghRuns,
+      pullRequests: cached.pullRequests ?? [],
       age,
     };
   } catch {
@@ -45,7 +48,8 @@ export function readCache(): {
 export function writeCache(
   stacks: StackInfo[],
   history: Map<string, StackHistory>,
-  ghRuns: GHRun[]
+  ghRuns: GHRun[],
+  pullRequests: PullRequestInfo[],
 ) {
   try {
     ensureCacheDir();
@@ -54,6 +58,7 @@ export function writeCache(
       stacks,
       history: Object.fromEntries(history),
       ghRuns,
+      pullRequests,
     };
     writeFileSync(CACHE_FILE, JSON.stringify(state));
   } catch {

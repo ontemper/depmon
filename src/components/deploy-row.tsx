@@ -1,6 +1,14 @@
 import { C } from "../lib/colors.ts";
-import { statusIcon, statusColor, truncate, pad, isCoreName, timeAgo, extractStackName } from "../lib/helpers.ts";
+import { truncate, pad, timeAgo, extractStackName } from "../lib/helpers.ts";
+import { runHealth } from "../lib/deploy-state.ts";
 import type { GHRun } from "../lib/types.ts";
+
+const HEALTH_STYLE = {
+  failed: { icon: "×", color: C.red },
+  deploying: { icon: "◆", color: C.cyan },
+  healthy: { icon: "●", color: C.green },
+  unknown: { icon: "?", color: C.yellow },
+} as const;
 
 export function DeployRow({
   run,
@@ -11,21 +19,27 @@ export function DeployRow({
   selected: boolean;
   width: number;
 }) {
-  const bg = selected ? C.bgSelected : "transparent";
-  const icon = statusIcon(run.status, run.conclusion);
-  const color = statusColor(run.status, run.conclusion);
-  const stackName = extractStackName(run.name);
-  const isCore = isCoreName(stackName);
-  const branchW = Math.max(22, Math.floor((width - 60) * 0.35));
-  const titleW = Math.max(25, Math.floor((width - 60) * 0.45));
+  const health = runHealth(run);
+  const style = HEALTH_STYLE[health];
+  const narrow = width < 72;
+  const titleStack = extractStackName(run.displayTitle);
+  const stackName = titleStack === "unknown" ? extractStackName(run.name) : titleStack;
+  const branchWidth = width >= 100 ? 24 : 17;
+  const titleWidth = Math.max(14, width - branchWidth - 56);
+  const label = health === "deploying"
+    ? run.status === "queued" ? "queued" : "running"
+    : run.conclusion || run.status;
+  const trigger = run.event === "workflow_dispatch" ? "manual" : run.event;
 
   return (
-    <box flexDirection="row" width="100%" backgroundColor={bg} paddingX={2} height={1}>
-      <text fg={color}>{pad(`${icon}`, 3)}</text>
-      <text fg={isCore ? C.orange : C.cyan}><strong>{pad(stackName, 14)}</strong></text>
-      <text fg={C.magenta}>{pad(truncate(run.headBranch, branchW), branchW + 1)}</text>
-      <text fg={C.fg}>{pad(truncate(run.displayTitle, titleW), titleW + 1)}</text>
-      <text fg={C.fgDark}>{pad(run.event === "workflow_dispatch" ? "manual" : run.event, 10)}</text>
+    <box flexDirection="row" width="100%" backgroundColor={selected ? C.bgSelected : "transparent"} paddingX={1} height={1}>
+      <text fg={selected ? C.cyan : C.fgDark}>{selected ? "▌" : " "}</text>
+      <text fg={style.color}>{pad(style.icon, 2)}</text>
+      <text fg={style.color}>{pad(label.toUpperCase(), 11)}</text>
+      <text fg={C.fg}><strong>{pad(truncate(stackName, 14), 15)}</strong></text>
+      {!narrow && <text fg={C.magenta}>{pad(truncate(run.headBranch, branchWidth - 1), branchWidth)}</text>}
+      <text fg={C.fgMuted}>{pad(truncate(run.displayTitle, titleWidth - 1), titleWidth)}</text>
+      {!narrow && <text fg={C.fgDark}>{pad(truncate(trigger, 9), 10)}</text>}
       <text fg={C.fgDark}>{timeAgo(run.startedAt)}</text>
     </box>
   );

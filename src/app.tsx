@@ -1,7 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { C } from "./lib/colors.ts";
-import { sortStacks } from "./lib/helpers.ts";
+import { buildStackStates, sortRuns, sortStackStates, summarizeFleet } from "./lib/deploy-state.ts";
+import { buildStackAvailability } from "./lib/availability.ts";
 import type { TabName, SortMode } from "./lib/types.ts";
 import { configExists } from "./lib/config.ts";
 import { useDeployData } from "./data/use-deploy-data.ts";
@@ -11,47 +12,72 @@ import { StacksView } from "./components/stacks-view.tsx";
 import { DeploysView } from "./components/deploys-view.tsx";
 import { ActivityView } from "./components/activity-view.tsx";
 import { StackHistoryView } from "./components/stack-history-view.tsx";
+import { AvailabilityView } from "./components/availability-view.tsx";
 import { FilterBar } from "./components/filter-bar.tsx";
 import { SetupView } from "./components/setup-view.tsx";
 
-const TABS: TabName[] = ["stacks", "deploys", "activity"];
+const TABS: TabName[] = ["stacks", "deploys", "activity", "availability"];
+const SORT_MODES: SortMode[] = ["attention", "recent", "name"];
 
 export function App() {
   const [showSetup, setShowSetup] = useState(!configExists());
   const renderer = useRenderer();
   const { data, refresh } = useDeployData();
-  const [activeTab, setActiveTab] = useState<TabName>("stacks");
+  const [activeTab, setActiveTab] = useState<TabName>("availability");
   const [selectedIdx, setSelectedIdx] = useState(0);
   // Sub-view: when user presses Enter on a stack, show full history
   const [expandedStack, setExpandedStack] = useState<string | null>(null);
   const [historyIdx, setHistoryIdx] = useState(0);
   const [inspecting, setInspecting] = useState(false);
   const [historyEntries, setHistoryEntries] = useState<import("./lib/types.ts").StackHistory[]>([]);
-  const [sortMode, setSortMode] = useState<SortMode>("recent");
-  const SORT_MODES: SortMode[] = ["name", "recent"];
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const [sortMode, setSortMode] = useState<SortMode>("attention");
   const [filterActive, setFilterActive] = useState(false);
   const [filterText, setFilterText] = useState("");
 
+  const stackStates = useMemo(
+    () => buildStackStates(data.stacks, data.history, data.ghRuns),
+    [data.stacks, data.history, data.ghRuns],
+  );
+  const summary = useMemo(() => summarizeFleet(stackStates), [stackStates]);
+  const orderedRuns = useMemo(() => sortRuns(data.ghRuns), [data.ghRuns]);
+  const timeline = useMemo(
+    () => [...stackStates]
+      .filter((state) => state.history)
+      .sort((a, b) => b.sortTime - a.sortTime),
+    [stackStates],
+  );
+  const availability = useMemo(
+    () => buildStackAvailability(stackStates, data.pullRequests),
+    [stackStates, data.pullRequests],
+  );
   const sorted = useMemo(() => {
-    const s = sortStacks(data.stacks, sortMode, data.history);
-    if (!filterText) return s;
-    const q = filterText.toLowerCase();
-    return s.filter((stack) => {
-      const h = data.history.get(stack.name);
-      return (
-        stack.name.toLowerCase().includes(q) ||
-        h?.branch.toLowerCase().includes(q) ||
-        h?.author.toLowerCase().includes(q) ||
-        h?.message.toLowerCase().includes(q)
-      );
-    });
-  }, [data.stacks, sortMode, data.history, filterText]);
+    const ordered = sortStackStates(stackStates, sortMode);
+    if (!filterText) return ordered;
+    const query = filterText.toLowerCase();
+    return ordered.filter(({ stack, history, ghRun }) =>
+      stack.name.toLowerCase().includes(query) ||
+      history?.branch.toLowerCase().includes(query) ||
+      history?.author.toLowerCase().includes(query) ||
+      history?.message.toLowerCase().includes(query) ||
+      ghRun?.displayTitle.toLowerCase().includes(query),
+    );
+  }, [stackStates, sortMode, filterText]);
 
   const maxItems = useMemo(() => {
     if (activeTab === "stacks") return sorted.length;
-    if (activeTab === "deploys") return data.ghRuns.length;
-    return [...data.history.values()].length;
-  }, [activeTab, data, sorted]);
+    if (activeTab === "deploys") return orderedRuns.length;
+    if (activeTab === "activity") return timeline.length;
+    return availability.length;
+  }, [activeTab, availability, orderedRuns, timeline, sorted]);
+
+  useEffect(() => {
+    setSelectedIdx((index) => Math.max(0, Math.min(index, maxItems - 1)));
+  }, [maxItems]);
+
+  useEffect(() => {
+    setHistoryIdx((index) => Math.max(0, Math.min(index, historyEntries.length - 1)));
+  }, [historyEntries.length]);
 
   useKeyboard((key) => {
     // Setup view handles its own keys
@@ -85,7 +111,7 @@ export function App() {
     }
 
     // Activate filter
-    if (key.name === "/" && !expandedStack) {
+    if (key.name === "/" && !expandedStack && activeTab === "stacks") {
       setFilterActive(true);
       setSelectedIdx(0);
       return;
@@ -104,24 +130,15 @@ export function App() {
         return;
       }
       if (key.name === "j" || key.name === "down") {
-        setHistoryIdx((i) => i + 1); // clamped in view
+        setHistoryIdx((i) => Math.max(0, Math.min(historyEntries.length - 1, i + 1)));
         return;
       }
       if (key.name === "k" || key.name === "up") {
         setHistoryIdx((i) => Math.max(0, i - 1));
         return;
       }
-      if (key.name === "i") {
-        setInspecting((v) => !v);
-        return;
-      }
-      if (key.name === "enter" || key.name === "return") {
-        // Open the selected deploy in Pulumi Cloud
-        const stack = data.stacks.find((s) => s.name === expandedStack);
-        const entry = historyEntries[historyIdx];
-        if (stack?.url && entry) {
-          Bun.spawn(["open", `${stack.url}/updates/${entry.version}`], { stdout: "ignore", stderr: "ignore" });
-        }
+      if (key.name === "i" || key.name === "enter" || key.name === "return") {
+        setInspecting((visible) => !visible);
         return;
       }
       // Open in Pulumi Cloud
@@ -144,7 +161,8 @@ export function App() {
         return;
       }
       if (key.name === "r") {
-        refresh();
+        void refresh();
+        setHistoryRefreshKey((key) => key + 1);
         return;
       }
       return;
@@ -172,7 +190,7 @@ export function App() {
 
     // Vim navigation
     if (key.name === "j" || key.name === "down") {
-      setSelectedIdx((i) => Math.min(maxItems - 1, i + 1));
+      setSelectedIdx((i) => Math.max(0, Math.min(maxItems - 1, i + 1)));
       return;
     }
     if (key.name === "k" || key.name === "up") {
@@ -183,14 +201,24 @@ export function App() {
     // Enter: expand stack history
     if (key.name === "enter" || key.name === "return") {
       if (activeTab === "stacks" && sorted[selectedIdx]) {
-        setExpandedStack(sorted[selectedIdx].name);
+        setExpandedStack(sorted[selectedIdx].stack.name);
         setHistoryIdx(0);
         setInspecting(false);
         return;
       }
-      if (activeTab === "deploys" && data.ghRuns[selectedIdx]) {
-        const url = data.ghRuns[selectedIdx].url;
+      if (activeTab === "deploys" && orderedRuns[selectedIdx]) {
+        const url = orderedRuns[selectedIdx].url;
         if (url) Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
+        return;
+      }
+      if (activeTab === "activity" && timeline[selectedIdx]) {
+        setExpandedStack(timeline[selectedIdx].stack.name);
+        setHistoryIdx(0);
+        setInspecting(false);
+        return;
+      }
+      if (activeTab === "availability" && availability[selectedIdx]?.pullRequest?.url) {
+        Bun.spawn(["open", availability[selectedIdx].pullRequest.url], { stdout: "ignore", stderr: "ignore" });
         return;
       }
     }
@@ -198,20 +226,26 @@ export function App() {
     // Open in Pulumi Cloud
     if (key.name === "p") {
       if (activeTab === "stacks") {
-        const stack = sorted[selectedIdx];
-        if (stack?.url) Bun.spawn(["open", stack.url], { stdout: "ignore", stderr: "ignore" });
+        const state = sorted[selectedIdx];
+        if (state?.stack.url) Bun.spawn(["open", state.stack.url], { stdout: "ignore", stderr: "ignore" });
+      } else if (activeTab === "availability") {
+        const item = availability[selectedIdx];
+        if (item?.state.stack.url) Bun.spawn(["open", item.state.stack.url], { stdout: "ignore", stderr: "ignore" });
       }
       return;
     }
 
-    // Open in GitHub Actions
+    // Open in GitHub
     if (key.name === "g") {
       if (activeTab === "stacks") {
-        const name = sorted[selectedIdx]?.name;
-        const h = name ? data.history.get(name) : undefined;
-        if (h?.ghRunUrl) Bun.spawn(["open", h.ghRunUrl], { stdout: "ignore", stderr: "ignore" });
+        const state = sorted[selectedIdx];
+        const url = state?.history?.ghRunUrl || state?.ghRun?.url;
+        if (url) Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
       } else if (activeTab === "deploys") {
-        const url = data.ghRuns[selectedIdx]?.url;
+        const url = orderedRuns[selectedIdx]?.url;
+        if (url) Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
+      } else if (activeTab === "availability") {
+        const url = availability[selectedIdx]?.pullRequest?.url;
         if (url) Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
       }
       return;
@@ -234,6 +268,7 @@ export function App() {
     if (key.name === "1") { setActiveTab("stacks"); setSelectedIdx(0); }
     if (key.name === "2") { setActiveTab("deploys"); setSelectedIdx(0); }
     if (key.name === "3") { setActiveTab("activity"); setSelectedIdx(0); }
+    if (key.name === "4") { setActiveTab("availability"); setSelectedIdx(0); }
   });
 
   // Setup view
@@ -250,14 +285,14 @@ export function App() {
     }
     return (
       <box flexDirection="column" width="100%" height="100%" backgroundColor={C.bg}>
-        <Header activeTab={activeTab} loading={data.loading} lastRefresh={data.lastRefresh} fromCache={data.fromCache} />
+        <Header activeTab={activeTab} loading={data.loading} lastRefresh={data.lastRefresh} fromCache={data.fromCache} summary={summary} warnings={data.warnings} error={data.error} />
         <box flexGrow={1}>
-          <StackHistoryView stack={stack} selectedIdx={historyIdx} inspecting={inspecting} onEntriesLoaded={setHistoryEntries} />
+          <StackHistoryView stack={stack} selectedIdx={historyIdx} inspecting={inspecting} refreshKey={historyRefreshKey} onEntriesLoaded={setHistoryEntries} />
         </box>
         <StatusBar hint={
           inspecting
-            ? "esc close  j/k nav  p pulumi  g github"
-            : "esc back  j/k nav  enter inspect  p pulumi  g github"
+            ? "esc close  j/k move  enter close inspector  p pulumi  g github"
+            : "esc back  j/k move  enter inspect  p pulumi  g github"
         } />
       </box>
     );
@@ -265,28 +300,37 @@ export function App() {
 
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={C.bg}>
-      <Header activeTab={activeTab} loading={data.loading} lastRefresh={data.lastRefresh} fromCache={data.fromCache} />
+      <Header activeTab={activeTab} loading={data.loading} lastRefresh={data.lastRefresh} fromCache={data.fromCache} summary={summary} warnings={data.warnings} error={data.error} />
 
       {data.loading && data.stacks.length === 0 ? (
         <box flexGrow={1} justifyContent="center" alignItems="center">
           <text fg={C.blue}>Loading deployment data…</text>
         </box>
-      ) : data.error ? (
+      ) : data.error && data.stacks.length === 0 ? (
         <box flexGrow={1} justifyContent="center" alignItems="center">
           <text fg={C.red}>Error: {data.error}</text>
         </box>
       ) : (
         <box flexGrow={1}>
-          {activeTab === "stacks" && <StacksView data={data} sorted={sorted} selectedIdx={selectedIdx} sortMode={sortMode} filterText={filterText} />}
-          {activeTab === "deploys" && <DeploysView data={data} selectedIdx={selectedIdx} />}
-          {activeTab === "activity" && <ActivityView data={data} />}
+          {activeTab === "stacks" && <StacksView states={sorted} selectedIdx={selectedIdx} sortMode={sortMode} filterText={filterText} />}
+          {activeTab === "deploys" && <DeploysView runs={orderedRuns} selectedIdx={selectedIdx} />}
+          {activeTab === "activity" && <ActivityView states={timeline} selectedIdx={selectedIdx} />}
+          {activeTab === "availability" && <AvailabilityView items={availability} selectedIdx={selectedIdx} />}
         </box>
       )}
 
       {filterActive ? (
         <FilterBar value={filterText} onChange={(v) => { setFilterText(v); setSelectedIdx(0); }} />
       ) : (
-        <StatusBar />
+        <StatusBar hint={
+          activeTab === "deploys"
+            ? "j/k move  enter/g open run  tab view  r sync  q quit"
+            : activeTab === "activity"
+              ? "j/k move  enter history  tab view  r sync  q quit"
+              : activeTab === "availability"
+                ? "j/k move  enter/g open PR  p pulumi  tab view  r sync  q quit"
+                : undefined
+        } />
       )}
     </box>
   );
