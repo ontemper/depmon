@@ -96,4 +96,33 @@ describe("stack availability", () => {
     ]);
     expect(result[0]?.ageDays).toBe(10);
   });
+
+  test("correlates PR via prNumber even when branch name is unknown", () => {
+    const stateWithPrNum: StackState = {
+      ...stackState("azure-nick-two", "unknown"),
+      history: {
+        version: 6,
+        status: "succeeded",
+        kind: "update",
+        message: "feat(docs): refine changelog hierarchy (#2639)",
+        branch: "unknown",
+        author: "Arya",
+        duration: "1m",
+        resourceChanges: "update:1",
+        startTime: "2026-07-18T12:00:00Z",
+        endTime: "2026-07-18T12:01:00Z",
+        ghRunUrl: "",
+        repo: "example/repo",
+        prNumber: 2639,
+      },
+    };
+    const result = buildStackAvailability(
+      [stateWithPrNum],
+      [pullRequest(2639, "arya/docs-refine", "MERGED", "2026-07-18T12:00:00Z")],
+      now,
+    );
+    expect(result[0]?.status).toBe("available");
+    expect(result[0]?.pullRequest?.number).toBe(2639);
+    expect(result[0]?.reason).toBe("Pull request merged");
+  });
 });

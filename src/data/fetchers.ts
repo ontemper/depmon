@@ -54,14 +54,34 @@ function parseArray<T>(source: string, text: string): T[] {
   }
 }
 
-function parseHistoryEntry(e: any): StackHistory {
-  const branch = e.environment?.["git.headName"] || "unknown";
-  const author = e.environment?.["git.author"] || "unknown";
-  const ghRunUrl = e.environment?.["ci.build.url"] || "";
-  const repo = e.environment?.["github.repository"] || "";
+function parseHistoryEntry(e: Record<string, unknown>): StackHistory {
+  const env = (e.environment && typeof e.environment === "object" ? e.environment : {}) as Record<string, unknown>;
+  const branch = typeof env["git.headName"] === "string" ? env["git.headName"] : "unknown";
+  const author = typeof env["git.author"] === "string" ? env["git.author"] : "unknown";
+  const ghRunUrl = typeof env["ci.build.url"] === "string" ? env["ci.build.url"] : "";
+  const repo = typeof env["github.repository"] === "string" ? env["github.repository"] : "";
+  const commitSha = typeof env["git.head"] === "string"
+    ? env["git.head"]
+    : typeof env["ci.pr.headSHA"] === "string"
+      ? env["ci.pr.headSHA"]
+      : undefined;
 
-  const startTime = e.startTime || "";
-  const endTime = e.endTime || "";
+  let prNumber: number | undefined;
+  const rawPrNum = env["github.pr.number"];
+  if (rawPrNum !== undefined && rawPrNum !== null && rawPrNum !== "") {
+    const parsedNum = Number(rawPrNum);
+    if (Number.isFinite(parsedNum)) prNumber = parsedNum;
+  }
+  if (prNumber === undefined && typeof e.message === "string") {
+    const msgMatch = e.message.match(/#(\d+)/);
+    if (msgMatch) {
+      const parsedNum = Number(msgMatch[1]);
+      if (Number.isFinite(parsedNum)) prNumber = parsedNum;
+    }
+  }
+
+  const startTime = typeof e.startTime === "string" ? e.startTime : "";
+  const endTime = typeof e.endTime === "string" ? e.endTime : "";
   let duration = "";
   if (startTime && endTime) {
     const diffSec = Math.floor(
@@ -72,17 +92,17 @@ function parseHistoryEntry(e: any): StackHistory {
     duration = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
   }
 
-  const rc = e.resourceChanges || {};
+  const rc = (e.resourceChanges && typeof e.resourceChanges === "object" ? e.resourceChanges : {}) as Record<string, unknown>;
   const changes = Object.entries(rc)
     .filter(([k]) => k !== "same")
     .map(([k, v]) => `${k}:${v}`)
     .join(" ");
 
   return {
-    version: e.version || 0,
-    status: e.result || "unknown",
-    kind: e.kind || "update",
-    message: e.message || "",
+    version: typeof e.version === "number" ? e.version : 0,
+    status: typeof e.result === "string" ? e.result : "unknown",
+    kind: typeof e.kind === "string" ? e.kind : "update",
+    message: typeof e.message === "string" ? e.message : "",
     branch,
     author,
     duration,
@@ -91,8 +111,11 @@ function parseHistoryEntry(e: any): StackHistory {
     endTime,
     ghRunUrl,
     repo,
+    prNumber,
+    commitSha,
   };
 }
+
 
 export async function fetchStackList(): Promise<StackInfo[]> {
   const cfg = loadConfig();
@@ -161,7 +184,7 @@ export async function fetchPullRequests(): Promise<PullRequestInfo[]> {
     "gh", "pr", "list",
     "--state", "all",
     "--json", "number,title,state,isDraft,headRefName,url,updatedAt,closedAt,mergedAt,author",
-    "--limit", "200",
+    "--limit", "2000",
     "-R", cfg.ghRepo,
   ]);
   return parseArray<PullRequestInfo>("GitHub pull requests", text);

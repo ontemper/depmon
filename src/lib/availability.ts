@@ -38,7 +38,9 @@ export function buildStackAvailability(
   now = Date.now(),
 ): StackAvailability[] {
   const pullRequestByBranch = new Map<string, PullRequestInfo>();
+  const pullRequestByNumber = new Map<number, PullRequestInfo>();
   for (const pullRequest of pullRequests) {
+    pullRequestByNumber.set(pullRequest.number, pullRequest);
     const key = branchKey(pullRequest.headRefName);
     const current = pullRequestByBranch.get(key);
     if (!current || Date.parse(pullRequest.updatedAt) > Date.parse(current.updatedAt)) {
@@ -49,9 +51,21 @@ export function buildStackAvailability(
   const availability = states
     .filter(({ stack }) => !isCoreName(stack.name))
     .map((state): StackAvailability => {
+      let pullRequest: PullRequestInfo | undefined;
+      if (state.history?.prNumber !== undefined) {
+        pullRequest = pullRequestByNumber.get(state.history.prNumber);
+      }
+      if (!pullRequest && state.history?.branch) {
+        const branch = branchKey(state.history.branch);
+        if (branch && branch !== "unknown") {
+          pullRequest = pullRequestByBranch.get(branch);
+        }
+      }
+
       if (state.stack.updateInProgress || state.health === "deploying") {
         return {
           state,
+          pullRequest,
           status: "deploying",
           ageDays: null,
           reason: "Deployment in progress",
@@ -67,18 +81,16 @@ export function buildStackAvailability(
         };
       }
 
-      const branch = branchKey(state.history.branch);
-      if (!branch || branch === "unknown") {
-        return {
-          state,
-          status: "unknown",
-          ageDays: daysSince(state.history.startTime, now),
-          reason: "Deployment branch is unknown",
-        };
-      }
-
-      const pullRequest = pullRequestByBranch.get(branch);
       if (!pullRequest) {
+        const branch = branchKey(state.history.branch);
+        if (!branch || branch === "unknown") {
+          return {
+            state,
+            status: "unknown",
+            ageDays: daysSince(state.history.startTime, now),
+            reason: "Deployment branch is unknown",
+          };
+        }
         return {
           state,
           status: "unknown",
@@ -98,7 +110,6 @@ export function buildStackAvailability(
           reason: pullRequest.isDraft ? "Draft pull request is open" : "Pull request is open",
         };
       }
-
       const releasedAt = pullRequest.mergedAt || pullRequest.closedAt || pullRequest.updatedAt;
       return {
         state,

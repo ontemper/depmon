@@ -21,6 +21,8 @@ export interface StackHistory {
   endTime: string;
   ghRunUrl: string;
   repo: string;
+  prNumber?: number;
+  commitSha?: string;
 }
 
 export interface GHRun {
