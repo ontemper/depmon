@@ -4,14 +4,27 @@ import { fetchStackList, fetchStackHistory, fetchGHRuns, fetchPullRequests } fro
 import { readCache, writeCache } from "./cache.ts";
 
 const HISTORY_CONCURRENCY = 4;
-
+const REFRESH_INTERVAL_MS = 15_000;
 
 async function fetchLatestHistories(
   stacks: StackInfo[],
+  previousStacks: StackInfo[],
   previous: Map<string, StackHistory>,
 ): Promise<{ history: Map<string, StackHistory>; failures: number }> {
-  const targets = stacks.filter((stack) => stack.lastUpdate !== "n/a");
-  const history = new Map<string, StackHistory>();
+  const currentNames = new Set(stacks.map((stack) => stack.name));
+  const history = new Map(
+    [...previous].filter(([name]) => currentNames.has(name)),
+  );
+  const previousByName = new Map(
+    previousStacks.map((stack) => [stack.name, stack]),
+  );
+  const targets = stacks.filter((stack) =>
+    stack.lastUpdate !== "n/a" &&
+    (
+      !history.has(stack.name) ||
+      previousByName.get(stack.name)?.lastUpdate !== stack.lastUpdate
+    )
+  );
   let cursor = 0;
   let failures = 0;
 
@@ -24,8 +37,6 @@ async function fetchLatestHistories(
         if (latest) history.set(stack.name, latest);
       } catch {
         failures += 1;
-        const stale = previous.get(stack.name);
-        if (stale) history.set(stack.name, stale);
       }
     }
   };
@@ -83,16 +94,31 @@ export function useDeployData() {
         if (stacksResult.status === "rejected") throw stacksResult.reason;
 
         const stacks = stacksResult.value;
-        const previousHistory = dataRef.current.history;
-        const previousRuns = dataRef.current.ghRuns;
-        const previousPullRequests = dataRef.current.pullRequests;
-
-        const { history, failures } = await fetchLatestHistories(stacks, previousHistory);
-        const warnings: string[] = [];
-        const ghRuns = runsResult.status === "fulfilled" ? runsResult.value : previousRuns;
+        const previousData = dataRef.current;
+        const previousHistory = previousData.history;
+        const ghRuns = runsResult.status === "fulfilled" ? runsResult.value : previousData.ghRuns;
         const pullRequests = pullRequestsResult.status === "fulfilled"
           ? pullRequestsResult.value
-          : previousPullRequests;
+          : previousData.pullRequests;
+        const refreshTime = new Date();
+
+        if (mounted.current) {
+          setData((current) => ({
+            ...current,
+            stacks,
+            ghRuns,
+            pullRequests,
+            lastRefresh: refreshTime,
+            fromCache: false,
+          }));
+        }
+
+        const { history, failures } = await fetchLatestHistories(
+          stacks,
+          previousData.stacks,
+          previousHistory,
+        );
+        const warnings: string[] = [];
         if (runsResult.status === "rejected") {
           const detail = runsResult.reason instanceof Error ? runsResult.reason.message : "Unknown data source error";
           warnings.push(`GitHub: ${detail}`);
@@ -115,7 +141,7 @@ export function useDeployData() {
           ghRuns,
           pullRequests,
           loading: false,
-          lastRefresh: new Date(),
+          lastRefresh: refreshTime,
           error: null,
           warnings,
           fromCache: false,
@@ -139,7 +165,7 @@ export function useDeployData() {
   useEffect(() => {
     mounted.current = true;
     void refresh();
-    const interval = setInterval(() => void refresh(), 60_000);
+    const interval = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
     return () => {
       mounted.current = false;
       clearInterval(interval);
